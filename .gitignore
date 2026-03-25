@@ -1,0 +1,6 @@
+/target
+output/
+*.log
+skills/dynamic/
+auto-drama.db
+.env

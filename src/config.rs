@@ -1,0 +1,135 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::fs;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub model: ModelConfig,
+    pub pipeline: PipelineConfig,
+    pub git: GitConfig,
+    pub logging: LoggingConfig,
+    pub skills: SkillsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    pub base_url: String,
+    pub generation_model: String,
+    pub review_model: String,
+    pub meta_model: String,
+    pub temperature: f32,
+    pub top_p: f32,
+    pub max_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineConfig {
+    pub auto_commit: bool,
+    pub max_retries: u32,
+    pub max_repair_rounds: u32,
+    pub output_dir: String,
+    pub pause_between_steps: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitConfig {
+    pub commit_prefix: String,
+    pub push_after_complete: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub log_file: String,
+    pub console_output: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsConfig {
+    pub skills_dir: String,
+    pub templates_dir: String,
+    pub dynamic_skills_dir: String,
+}
+
+impl Config {
+    pub fn load(project_dir: &Path) -> Result<Self> {
+        let config_path = project_dir.join("config.toml");
+        if !config_path.exists() {
+            return Self::create_default(&config_path);
+        }
+        let content = fs::read_to_string(&config_path)
+            .with_context(|| format!("读取配置文件失败: {}", config_path.display()))?;
+        let config: Config = toml::from_str(&content)
+            .with_context(|| format!("解析配置文件失败: {}", config_path.display()))?;
+        Ok(config)
+    }
+
+    fn create_default(config_path: &Path) -> Result<Self> {
+        let default = Config::default();
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(&default)?;
+        fs::write(config_path, &content)?;
+        tracing::info!("已创建默认配置文件: {}", config_path.display());
+        Ok(default)
+    }
+
+    pub fn skills_dir(&self, project_dir: &Path) -> PathBuf {
+        project_dir.join(&self.skills.skills_dir)
+    }
+
+    pub fn templates_dir(&self, project_dir: &Path) -> PathBuf {
+        project_dir.join(&self.skills.templates_dir)
+    }
+
+    pub fn dynamic_skills_dir(&self, project_dir: &Path) -> PathBuf {
+        let dir = project_dir.join(&self.skills.dynamic_skills_dir);
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    pub fn output_dir(&self, project_dir: &Path) -> PathBuf {
+        let dir = project_dir.join(&self.pipeline.output_dir);
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            model: ModelConfig {
+                base_url: "http://localhost:11434".into(),
+                generation_model: "qwen2.5:14b".into(),
+                review_model: "qwen2.5:7b".into(),
+                meta_model: "qwen2.5:7b".into(),
+                temperature: 0.8,
+                top_p: 0.9,
+                max_tokens: 8192,
+            },
+            pipeline: PipelineConfig {
+                auto_commit: true,
+                max_retries: 3,
+                max_repair_rounds: 2,
+                output_dir: "./output".into(),
+                pause_between_steps: false,
+            },
+            git: GitConfig {
+                commit_prefix: "🤖 [auto-drama]".into(),
+                push_after_complete: false,
+            },
+            logging: LoggingConfig {
+                level: "info".into(),
+                log_file: "./auto-drama.log".into(),
+                console_output: true,
+            },
+            skills: SkillsConfig {
+                skills_dir: "./skills".into(),
+                templates_dir: "./templates".into(),
+                dynamic_skills_dir: "./skills/dynamic".into(),
+            },
+        }
+    }
+}

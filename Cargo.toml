@@ -1,0 +1,38 @@
+[package]
+name = "auto-drama"
+version = "0.1.0"
+edition = "2021"
+description = "自动化短剧创作工具 - 基于 Ollama 本地模型的 AI 编剧助手"
+license = "MIT"
+
+[[bin]]
+name = "auto-drama"
+path = "src/main.rs"
+
+[dependencies]
+# rig-core = "0.4"  # AI Agent 框架 (见下方说明)
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
+regex = "1"
+reqwest = { version = "0.12", features = ["json"] }
+glob = "0.3"
+walkdir = "2"
+indicatif = "0.17"
+colored = "2"
+console = "0.15"
+dialoguer = "0.11"
+futures-core = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -1,0 +1,47 @@
+[model]
+# Ollama 服务地址
+base_url = "http://localhost:11434"
+# 生成用模型（大模型，质量优先）
+generation_model = "qwen2.5:14b"
+# 审查/修复用模型（快速模型）
+review_model = "qwen2.5:7b"
+# 元认知模型（创建 skill、规划等）
+meta_model = "qwen2.5:7b"
+# 生成参数
+temperature = 0.8
+top_p = 0.9
+max_tokens = 8192
+
+[pipeline]
+# 自动 git commit
+auto_commit = true
+# 每个 skill 最大重试次数
+max_retries = 3
+# 每个 skill 审查不通过时的修复轮次
+max_repair_rounds = 2
+# 输出目录（相对于项目目录）
+output_dir = "./output"
+# 是否在每步后暂停等待确认（调试用）
+pause_between_steps = false
+
+[git]
+# 自动 commit 前缀
+commit_prefix = "🤖 [auto-drama]"
+# 完成后是否 push
+push_after_complete = false
+
+[logging]
+# 日志级别: trace, debug, info, warn, error
+level = "info"
+# 日志文件
+log_file = "./auto-drama.log"
+# 是否同时在终端显示日志
+console_output = true
+
+[skills]
+# skill 定义文件目录
+skills_dir = "./skills"
+# 模板目录
+templates_dir = "./templates"
+# 动态创建的 skill 存放目录
+dynamic_skills_dir = "./skills/dynamic"
