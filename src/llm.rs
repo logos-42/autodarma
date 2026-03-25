@@ -115,6 +115,7 @@ pub struct FunctionCall {
 // Ollama Client
 // ============================================================================
 
+#[derive(Clone)]
 pub struct OllamaClient {
     base_url: String,
     http_client: reqwest::Client,

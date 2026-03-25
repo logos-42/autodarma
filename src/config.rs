@@ -10,6 +10,17 @@ pub struct Config {
     pub git: GitConfig,
     pub logging: LoggingConfig,
     pub skills: SkillsConfig,
+    pub quality: QualityConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QualityConfig {
+    /// 目标质量等级 (C/B/A/AA/AAA/S/SS/SSS)
+    pub target_level: String,
+    /// 是否启用无限修复循环
+    pub infinite_repair: bool,
+    /// 最大修复轮次 (0 为无限)
+    pub max_repair_rounds: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +140,11 @@ impl Default for Config {
                 skills_dir: "./skills".into(),
                 templates_dir: "./templates".into(),
                 dynamic_skills_dir: "./skills/dynamic".into(),
+            },
+            quality: QualityConfig {
+                target_level: "SSS".into(),
+                infinite_repair: true,
+                max_repair_rounds: 0,
             },
         }
     }

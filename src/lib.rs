@@ -43,13 +43,17 @@
 pub mod agent;
 pub mod config;
 pub mod git;
+pub mod infinite_repair;
 pub mod llm;
 pub mod output;
+pub mod quality;
 pub mod skills;
 
 // 重新导出核心类型
 pub use agent::DramaOrchestrator;
 pub use config::Config;
+pub use infinite_repair::InfiniteRepairLoop;
+pub use quality::QualityLevel;
 pub use skills::{SkillDefinition, SkillRegistry, SkillExecution};
 
 // 导出阶段枚举

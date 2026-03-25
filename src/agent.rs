@@ -83,6 +83,8 @@ pub struct DramaOrchestrator {
     pub current_stage: DramaStage,
     research_state: ResearchState,
     execution_log: Vec<ExecutionLogEntry>,
+    /// 质量评估器
+    quality_evaluator: Option<crate::quality::QualityEvaluator>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +123,14 @@ impl DramaOrchestrator {
 
         let output_manager = OutputManager::new(&output_dir);
 
+        // 创建质量评估器
+        let target_level = crate::quality::QualityLevel::from_str_lossy(&config.quality.target_level);
+        let quality_evaluator = crate::quality::QualityEvaluator::new(
+            ollama_client.clone(),
+            target_level,
+            config.model.review_model.clone(),
+        );
+
         Ok(Self {
             config,
             project_dir: project_dir.to_path_buf(),
@@ -133,6 +143,7 @@ impl DramaOrchestrator {
             current_stage: DramaStage::Planning,
             research_state: ResearchState::Initializing,
             execution_log: Vec::new(),
+            quality_evaluator: Some(quality_evaluator),
         })
     }
 
@@ -170,9 +181,14 @@ impl DramaOrchestrator {
         }
     }
 
-    /// 运行完整的创作 Pipeline
+    /// SSS 质量阈值 (9.0/10)
+    const SSS_QUALITY_THRESHOLD: f32 = 9.0;
+    /// 最大迭代次数
+    const MAX_ITERATIONS: u32 = 10;
+
+    /// 运行完整的创作 Pipeline (Karpas while 循环)
     pub async fn run_full_pipeline(&mut self, user_input: &HashMap<String, String>) -> Result<()> {
-        info!("🎬 开始自动短剧创作流程");
+        info!("🎬 开始自动短剧创作流程 (Karpas while 循环模式)");
         
         self.research_state = ResearchState::Initializing;
         
@@ -186,44 +202,150 @@ impl DramaOrchestrator {
             self.agent_context.set_metadata(key.clone(), serde_json::json!(value));
         }
 
-        // 遍历所有阶段
-        for stage in DramaStage::all_stages() {
-            self.current_stage = stage.clone();
-            info!("📌 进入阶段：{}", stage.as_str());
-            
-            match self.run_stage(&stage, user_input).await {
-                Ok(_) => {
-                    info!("✓ 阶段 {} 完成", stage.as_str());
-                    
-                    // 阶段完成后自动 commit
-                    if self.config.pipeline.auto_commit {
-                        let commit_msg = format!("完成 {} 阶段", stage.as_str());
-                        let _ = self.git_manager.auto_commit(&commit_msg);
+        let mut iteration = 0u32;
+        let mut best_quality: Option<f32> = None;
+
+        // ========== 外层 while 循环：持续迭代直到质量达标 ==========
+        loop {
+            iteration += 1;
+            info!("╔══════════════════════════════════════╗");
+            info!("║  第 {} 轮迭代 (max: {})          ║", iteration, Self::MAX_ITERATIONS);
+            info!("╚══════════════════════════════════════╝");
+
+            // 遍历所有阶段
+            for stage in DramaStage::all_stages() {
+                self.current_stage = stage.clone();
+                info!("📌 进入阶段：{}", stage.as_str());
+                
+                match self.run_stage(&stage, user_input).await {
+                    Ok(_) => {
+                        info!("✓ 阶段 {} 完成", stage.as_str());
+                        
+                        if self.config.pipeline.auto_commit {
+                            let commit_msg = format!("完成 {} 阶段 (迭代 {})", stage.as_str(), iteration);
+                            let _ = self.git_manager.auto_commit(&commit_msg);
+                        }
+                    }
+                    Err(e) => {
+                        error!("✗ 阶段 {} 失败：{}", stage.as_str(), e);
+                        self.research_state = ResearchState::Error;
+                        return Err(e);
                     }
                 }
-                Err(e) => {
-                    error!("✗ 阶段 {} 失败：{}", stage.as_str(), e);
-                    self.research_state = ResearchState::Error;
-                    return Err(e);
-                }
             }
+
+            // 全文质量评分
+            let quality_score = self.check_quality_score(user_input).await?;
+            info!("📊 第 {} 轮质量分数：{:.1}/10", iteration, quality_score);
+
+            // 记录最佳分数
+            if best_quality.map_or(true, |b| quality_score > b) {
+                best_quality = Some(quality_score);
+            }
+
+            // 检查是否达到 SSS
+            if quality_score >= Self::SSS_QUALITY_THRESHOLD {
+                info!("🌟 达到 SSS 质量等级！分数：{:.1}", quality_score);
+                break;
+            }
+
+            // 检查最大迭代次数
+            if iteration >= Self::MAX_ITERATIONS {
+                warn!("⚠ 达到最大迭代次数 {}，停止", Self::MAX_ITERATIONS);
+                break;
+            }
+
+            info!("🔄 质量未达标 ({:.1} < {:.1})，继续迭代...", quality_score, Self::SSS_QUALITY_THRESHOLD);
         }
 
         self.research_state = ResearchState::Complete;
         
         // 最终提交
         if self.config.pipeline.auto_commit {
-            let _ = self.git_manager.auto_commit("🎉 短剧创作完成");
+            let quality_msg = best_quality
+                .map(|s| format!("🎉 短剧创作完成 - 质量分数：{:.1}/10 ({} 轮迭代)", s, iteration))
+                .unwrap_or_else(|| "🎉 短剧创作完成".to_string());
+            let _ = self.git_manager.auto_commit(&quality_msg);
             
             if self.config.git.push_after_complete {
                 let _ = self.git_manager.push();
             }
         }
 
-        info!("🎉 短剧创作流程完成！");
+        info!("🎉 短剧创作流程完成！共 {} 轮迭代", iteration);
         info!("输出目录：{}", self.output_dir.display());
         
         Ok(())
+    }
+
+    /// 检查质量分数（通过 LLM 评估全文）
+    async fn check_quality_score(&self, user_input: &HashMap<String, String>) -> Result<f32> {
+        let mut all_content = String::new();
+        
+        for (key, value) in user_input {
+            all_content.push_str(&format!("{}: {}\n", key, value));
+        }
+        
+        // 收集已生成的内容
+        for entry in &self.execution_log {
+            if let Some(ref path) = entry.file_path {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    all_content.push_str(&format!("\n=== {} ===\n{}", entry.skill_name, content));
+                }
+            }
+        }
+
+        if all_content.len() < 100 {
+            return Ok(5.0);
+        }
+
+        // 调用 LLM 评分
+        let score_prompt = format!(
+            r#"你是一位严格的短剧质量评估专家。请对以下短剧内容进行 0-10 分评分。
+
+评分维度：
+- 情节编排 (权重 15%)
+- 人物塑造 (权重 15%)
+- 对白质量 (权重 15%)
+- 情感表达 (权重 12%)
+- 节奏把控 (权重 10%)
+- 创意新颖 (权重 10%)
+- 逻辑连贯 (权重 13%)
+- 商业潜力 (权重 10%)
+
+请只返回一个 JSON：{{"overall_score": 8.5, "brief": "一句话评价"}}
+
+---
+
+内容：
+{}"#,
+            &all_content[..all_content.len().min(6000)]
+        );
+
+        let response = self.ollama_client
+            .complete(
+                &self.config.model.review_model,
+                "你是严格的质量评估专家。只返回 JSON。",
+                &score_prompt,
+                0.2,
+                512,
+            ).await?;
+
+        // 提取分数
+        if let Some(start) = response.find("\"overall_score\"") {
+            let rest = &response[start..];
+            if let Some(colon) = rest.find(':') {
+                let num_start = rest[colon+1..].find(|c: char| c.is_numeric()).map(|i| colon + 1 + i);
+                if let Some(ns) = num_start {
+                    let num_str: String = rest[ns..].chars().take_while(|c| c.is_numeric() || *c == '.').collect();
+                    if let Ok(score) = num_str.parse::<f32>() {
+                        return Ok(score.min(10.0));
+                    }
+                }
+            }
+        }
+
+        Ok(7.0)
     }
 
     /// 运行单个阶段
@@ -627,6 +749,158 @@ impl DramaOrchestrator {
     /// 列出可用模型
     pub async fn list_models(&self) -> Result<Vec<String>> {
         self.ollama_client.list_models().await
+    }
+
+    /// 质量评估 + 无限修复 until 达到目标等级 (Karpas while 循环核心)
+    pub async fn evaluate_and_repair_until_sss(
+        &mut self,
+        content: &str,
+        content_type: &str,
+    ) -> Result<(String, crate::quality::QualityEvaluation)> {
+        let evaluator = self.quality_evaluator.as_ref()
+            .context("质量评估器未初始化")?;
+
+        let mut current_content = content.to_string();
+        let mut round = 0u32;
+        let mut best_evaluation: Option<crate::quality::QualityEvaluation> = None;
+        let mut best_content = current_content.clone();
+        let max_rounds = self.config.quality.max_repair_rounds;
+
+        info!("🔍 开始 while 修复循环 (目标: {})", self.config.quality.target_level);
+
+        loop {
+            round += 1;
+
+            if max_rounds > 0 && round > max_rounds {
+                info!("达到最大修复轮次 {}，停止循环", max_rounds);
+                break;
+            }
+
+            // 1. 质量评估
+            let evaluation = match evaluator.evaluate(&current_content, content_type).await {
+                Ok(ev) => ev,
+                Err(e) => {
+                    warn!("质量评估失败 (轮次 {}): {}", round, e);
+                    break;
+                }
+            };
+
+            info!(
+                "轮次 {} - 等级: {} (分数: {:.1})",
+                round, evaluation.overall_level.as_str(), evaluation.overall_score
+            );
+
+            // 记录最佳
+            let is_new_best = best_evaluation.as_ref()
+                .map(|best| evaluation.overall_score > best.overall_score)
+                .unwrap_or(true);
+            if is_new_best {
+                best_evaluation = Some(evaluation.clone());
+                best_content = current_content.clone();
+            }
+
+            // 2. 达标检查
+            if evaluation.meets_target {
+                info!("达到目标质量！", );
+                if self.config.pipeline.auto_commit {
+                    let _ = self.git_manager.auto_commit(
+                        &format!("达标 {} - {} 轮完成", evaluation.overall_level.as_str(), round),
+                    );
+                }
+                return Ok((current_content, evaluation));
+            }
+
+            // 3. 获取修复建议
+            let priority_issues = crate::quality::QualityEvaluator::get_repair_priority_list(&evaluation);
+            if priority_issues.is_empty() {
+                info!("没有需要修复的问题，退出");
+                break;
+            }
+
+            let issues_text: String = priority_issues.iter()
+                .take(10)
+                .map(|i| format!(
+                    "- [{}][P{}] {} | 建议: {}",
+                    i.severity, i.priority, i.description, i.fix_suggestion
+                ))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let repair_prompt = format!(
+                r#"你是顶级短剧编剧修复专家。请修复以下内容，达到目标质量等级 {}。
+
+## 当前等级: {} ({:.1}/100)
+## 需要修复的问题:
+{}
+
+## 要求:
+1. 逐一修复上述问题
+2. 保持连贯性和一致性
+3. 不改变核心走向
+
+## 待修复内容:
+{}"#,
+                self.config.quality.target_level,
+                evaluation.overall_level.as_str(),
+                evaluation.overall_score,
+                issues_text,
+                current_content
+            );
+
+            // 4. 执行修复
+            match self.ollama_client.complete(
+                &self.config.model.generation_model,
+                "你是顶级短剧编剧修复专家。输出修复后的完整内容。",
+                &repair_prompt,
+                0.7,
+                self.config.model.max_tokens,
+            ).await {
+                Ok(repaired) => {
+                    current_content = repaired;
+                    if self.config.pipeline.auto_commit {
+                        let _ = self.git_manager.auto_commit(
+                            &format!("修复轮次 {} (等级: {})", round, evaluation.overall_level.as_str()),
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!("修复失败 (轮次 {}): {}", round, e);
+                    break;
+                }
+            }
+        }
+
+        let final_evaluation = best_evaluation.unwrap_or_else(|| {
+            crate::quality::QualityEvaluation {
+                overall_level: crate::quality::QualityLevel::C,
+                overall_score: 0.0,
+                dimension_scores: std::collections::HashMap::new(),
+                strengths: Vec::new(),
+                issues: Vec::new(),
+                improvement_suggestions: Vec::new(),
+                summary: "评估未完成".into(),
+                meets_target: false,
+                target_level: crate::quality::QualityLevel::from_str_lossy(&self.config.quality.target_level),
+            }
+        });
+
+        info!("while 循环结束：{} 轮，最终 {} ({:.1})", round, final_evaluation.overall_level.as_str(), final_evaluation.overall_score);
+        Ok((best_content, final_evaluation))
+    }
+
+    /// 获取执行日志引用
+    pub fn execution_log(&self) -> &[ExecutionLogEntry] {
+        &self.execution_log
+    }
+
+    /// 获取执行日志可变引用
+    pub fn execution_log_mut(&mut self) -> &mut Vec<ExecutionLogEntry> {
+        &mut self.execution_log
+    }
+
+    /// 获取输出管理器引用
+    pub fn output_manager(&self) -> &OutputManager {
+        &self.output_manager
     }
 }
 

@@ -45,3 +45,11 @@ skills_dir = "./skills"
 templates_dir = "./templates"
 # 动态创建的 skill 存放目录
 dynamic_skills_dir = "./skills/dynamic"
+
+[quality]
+# 目标质量等级：C/B/A/AA/AAA/S/SS/SSS
+target_level = "SSS"
+# 是否启用无限修复循环 (直到达到目标质量)
+infinite_repair = true
+# 最大修复轮次 (0 为无限，>0 为具体轮次)
+max_repair_rounds = 0
