@@ -70,7 +70,7 @@ impl DramaOrchestrator {
             .clone();
 
         let mut retry_count = 0;
-        let mut last_result: Option<SkillExecution> = None;
+        let mut last_creation: Option<SkillExecution> = None;
 
         while retry_count < self.config.pipeline.max_retries {
             info!("执行 skill: {} (尝试 {}/{})", skill_name, retry_count + 1, self.config.pipeline.max_retries);
@@ -84,8 +84,16 @@ impl DramaOrchestrator {
                 params.insert(dep_name, content);
             }
 
-            // 执行 creation
-            let execution = self.execute_skill_creation(&skill, &params).await?;
+            // 执行 creation（失败时重试）
+            let execution = match self.execute_skill_creation(&skill, &params).await {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!("生成失败（尝试 {}）：{}", retry_count + 1, e);
+                    retry_count += 1;
+                    continue;
+                }
+            };
+            last_creation = Some(execution.clone());
 
             // 如果有审查标准，执行审查循环
             if let Some(ref review_config) = skill.review {
@@ -94,20 +102,25 @@ impl DramaOrchestrator {
                         return Ok(final_execution);
                     }
                     Err(e) => {
-                        warn!("审查修复失败：{}", e);
-                        last_result = Some(execution);
+                        let err_str = e.to_string();
+                        warn!("审查失败：{}", err_str);
+                        // 5xx / 超时：审查不可用，直接使用生成结果继续
+                        if err_str.contains("524") || err_str.contains("500") || err_str.contains("502") || err_str.contains("503") || err_str.contains("timeout") {
+                            warn!("审查服务暂不可用，跳过审查直接使用生成结果");
+                            return Ok(execution);
+                        }
+                        // 其他错误：重试整个流程
+                        retry_count += 1;
                     }
                 }
             } else {
                 // 没有审查标准，直接返回
                 return Ok(execution);
             }
-
-            retry_count += 1;
         }
 
-        // 重试耗尽，返回最后一次结果（即使审查未通过）
-        last_result.context("Skill 执行失败：达到最大重试次数")
+        // 重试耗尽，返回最后一次成功的生成结果（即使审查未通过）
+        last_creation.context("Skill 执行失败：生成和审查均未成功")
     }
 
     /// 执行 skill 的 creation 模式
