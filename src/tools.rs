@@ -6,11 +6,11 @@ use crate::goals::GoalTracker;
 
 /// 创建所有可用的工具
 pub fn create_all_tools(
-    memory_store: Arc<std::sync::Mutex<MemoryStore>>,
-    goal_tracker: Arc<std::sync::Mutex<GoalTracker>>,
-    output_dir: &str,
-    project_dir: &str,
-    commit_prefix: &str,
+    _memory_store: Arc<std::sync::Mutex<MemoryStore>>,
+    _goal_tracker: Arc<std::sync::Mutex<GoalTracker>>,
+    _output_dir: &str,
+    _project_dir: &str,
+    _commit_prefix: &str,
 ) -> Vec<Arc<dyn crate::llm::Tool>> {
     // TODO: 实现具体的工具
     // - memory: 记忆工具

@@ -1,15 +1,14 @@
-use anyhow::{Context, Result};
-use std::collections::HashMap;
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{info, warn, error};
+use tracing::info;
 
 use crate::config::Config;
 use crate::git::GitManager;
 use crate::goals::{GoalTracker, GoalType, GoalStatus};
 use crate::llm::{OllamaClient, AgentContext, Tool};
 use crate::memory::{MemoryStore, MemoryCategory, MemorySource};
-use crate::skills::{SkillRegistry, SkillDefinition, SkillExecution, SkillMode, ReviewResult};
+use crate::skills::SkillRegistry;
 use crate::output::OutputManager;
 
 mod pipeline;

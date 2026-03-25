@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use tracing::info;
 
 use super::{DramaOrchestrator, DramaStage, ExecutionLogEntry, GoalType};
-use crate::goals::GoalStatus;
 use crate::llm::OllamaClient;
 use crate::memory::MemoryCategory;
 use crate::memory::MemorySource;

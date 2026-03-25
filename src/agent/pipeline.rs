@@ -7,6 +7,7 @@ use super::{
     GoalStatus, GoalType,
     MemoryCategory, MemorySource,
 };
+use crate::skills::SkillExecution;
 
 impl DramaOrchestrator {
     /// SSS 质量阈值 (9.0/10)
