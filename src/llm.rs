@@ -48,6 +48,106 @@ pub trait Tool: Send + Sync {
 // Agent Context - 工具执行时的上下文
 // ============================================================================
 
+/// 记忆条目 - 用于存储对话历史和上下文
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEntry {
+    pub timestamp: i64,
+    pub role: String,
+    pub content: String,
+    pub skill_name: Option<String>,
+    pub stage: Option<String>,
+    pub metadata: HashMap<String, Value>,
+}
+
+/// 记忆系统 - 管理对话历史和上下文
+#[derive(Debug, Clone)]
+pub struct Memory {
+    entries: Vec<MemoryEntry>,
+    max_entries: usize,
+}
+
+impl Memory {
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            max_entries,
+        }
+    }
+
+    /// 添加记忆条目
+    pub fn add(&mut self, entry: MemoryEntry) {
+        self.entries.push(entry);
+        if self.entries.len() > self.max_entries {
+            self.entries.remove(0);
+        }
+    }
+
+    /// 获取最近的记忆
+    pub fn recent(&self, count: usize) -> Vec<&MemoryEntry> {
+        self.entries.iter().rev().take(count).collect()
+    }
+
+    /// 获取特定阶段的记忆
+    pub fn get_by_stage(&self, stage: &str) -> Vec<&MemoryEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.stage.as_deref() == Some(stage))
+            .collect()
+    }
+
+    /// 获取特定 skill 的记忆
+    pub fn get_by_skill(&self, skill_name: &str) -> Vec<&MemoryEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.skill_name.as_deref() == Some(skill_name))
+            .collect()
+    }
+
+    /// 生成上下文注入字符串
+    pub fn inject_context(&self, current_skill: &str, current_stage: &str) -> String {
+        let mut context = String::from("## 历史上下文\n\n");
+        
+        // 添加当前阶段的历史
+        let stage_history = self.get_by_stage(current_stage);
+        if !stage_history.is_empty() {
+            context.push_str(&format!("### {} 阶段历史\n", current_stage));
+            for entry in stage_history.iter().rev().take(5) {
+                context.push_str(&format!("- {}\n", entry.content.chars().take(200).collect::<String>()));
+            }
+            context.push('\n');
+        }
+        
+        // 添加当前 skill 的历史
+        let skill_history = self.get_by_skill(current_skill);
+        if !skill_history.is_empty() {
+            context.push_str(&format!("### {} Skill 历史\n", current_skill));
+            for entry in skill_history.iter().rev().take(3) {
+                context.push_str(&format!("- {}\n", entry.content.chars().take(200).collect::<String>()));
+            }
+        }
+        
+        context
+    }
+
+    /// 转换为消息历史
+    pub fn to_messages(&self) -> Vec<Message> {
+        self.entries
+            .iter()
+            .map(|e| Message {
+                role: e.role.clone(),
+                content: e.content.clone(),
+                name: e.skill_name.clone(),
+                tool_calls: None,
+            })
+            .collect()
+    }
+
+    /// 清空记忆
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentContext {
     pub project_dir: String,
@@ -55,6 +155,8 @@ pub struct AgentContext {
     pub conversation_history: Vec<Message>,
     pub generated_files: Vec<String>,
     pub metadata: HashMap<String, Value>,
+    /// 记忆系统
+    pub memory: Option<Memory>,
 }
 
 impl AgentContext {
@@ -65,6 +167,7 @@ impl AgentContext {
             conversation_history: Vec::new(),
             generated_files: Vec::new(),
             metadata: HashMap::new(),
+            memory: Some(Memory::new(100)), // 默认保留 100 条记忆
         }
     }
 
@@ -80,6 +183,29 @@ impl AgentContext {
 
     pub fn set_metadata(&mut self, key: String, value: Value) {
         self.metadata.insert(key, value);
+    }
+    
+    /// 添加记忆
+    pub fn add_memory(&mut self, role: String, content: String, skill_name: Option<String>, stage: Option<String>) {
+        if let Some(ref mut memory) = self.memory {
+            let entry = MemoryEntry {
+                timestamp: chrono::Utc::now().timestamp(),
+                role,
+                content,
+                skill_name,
+                stage,
+                metadata: self.metadata.clone(),
+            };
+            memory.add(entry);
+        }
+    }
+    
+    /// 获取上下文注入
+    pub fn get_context_injection(&self, skill_name: &str, stage: &str) -> String {
+        self.memory
+            .as_ref()
+            .map(|m| m.inject_context(skill_name, stage))
+            .unwrap_or_default()
     }
 }
 

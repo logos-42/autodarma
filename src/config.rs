@@ -11,6 +11,8 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub skills: SkillsConfig,
     pub quality: QualityConfig,
+    pub memory: MemoryConfig,
+    pub agent: AgentConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +63,28 @@ pub struct SkillsConfig {
     pub skills_dir: String,
     pub templates_dir: String,
     pub dynamic_skills_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    /// 记忆存储目录
+    pub store_dir: String,
+    /// 上下文注入的最大字符数
+    pub max_context_chars: usize,
+    /// 每个分类最大返回条数
+    pub max_entries_per_category: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// 是否启用 tool calling (rig 模式)
+    pub enable_tools: bool,
+    /// 最大工具调用轮次
+    pub max_tool_rounds: u32,
+    /// 是否自动注入记忆上下文
+    pub auto_inject_memory: bool,
+    /// 是否自动注入目标上下文
+    pub auto_inject_goals: bool,
 }
 
 impl Config {

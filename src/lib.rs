@@ -43,18 +43,24 @@
 pub mod agent;
 pub mod config;
 pub mod git;
+pub mod goals;
 pub mod infinite_repair;
 pub mod llm;
+pub mod memory;
 pub mod output;
 pub mod quality;
 pub mod skills;
+pub mod tools;
 
 // 重新导出核心类型
 pub use agent::DramaOrchestrator;
 pub use config::Config;
+pub use goals::{Goal, GoalTracker, GoalType, GoalStatus};
 pub use infinite_repair::InfiniteRepairLoop;
+pub use memory::MemoryStore;
 pub use quality::QualityLevel;
 pub use skills::{SkillDefinition, SkillRegistry, SkillExecution};
+pub use tools::create_all_tools;
 
 // 导出阶段枚举
 pub use agent::DramaStage;
