@@ -12,7 +12,7 @@ use auto_drama::{Config, DramaOrchestrator};
 #[command(name = "auto-drama")]
 #[command(author = "Auto Drama Team")]
 #[command(version = "0.1.0")]
-#[command(about = "自动化短剧创作工具 - 基于 Ollama 本地模型的 AI 编剧助手", long_about = None)]
+#[command(about = "自动化短剧创作工具 - AI 编剧助手", long_about = None)]
 struct Cli {
     /// 项目目录
     #[arg(short, long, default_value = ".")]
@@ -39,11 +39,11 @@ enum Commands {
         genre: String,
 
         /// 核心主题
-        #[arg(short, long)]
+        #[arg(long)]
         theme: String,
 
         /// 总集数
-        #[arg(short, long, default_value = "80")]
+        #[arg(short = 'n', long, default_value = "80")]
         episodes: u32,
 
         /// 时代背景 (如：现代、唐朝、民国)
@@ -153,6 +153,11 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // 加载 .env 文件（在日志初始化前，用 eprintln）
+    if let Err(e) = dotenv::dotenv() {
+        eprintln!("[WARN] 未加载 .env 文件: {}", e);
+    }
+
     let cli = Cli::parse();
 
     // 初始化日志
@@ -197,10 +202,9 @@ async fn main() -> Result<()> {
             // 创建编排器并运行完整流程
             let mut orchestrator = DramaOrchestrator::new(config, &cli.project)?;
             
-            // 健康检查
             info!("进行健康检查...");
             if !orchestrator.health_check().await? {
-                error!("Ollama 服务不可用，请确保 Ollama 正在运行");
+                error!("LLM 服务不可用，请检查配置和网络连接");
                 return Ok(());
             }
 
@@ -223,7 +227,7 @@ async fn main() -> Result<()> {
             let mut orchestrator = DramaOrchestrator::new(config, &cli.project)?;
             
             if !orchestrator.health_check().await? {
-                error!("Ollama 服务不可用");
+                error!("LLM 服务不可用");
                 return Ok(());
             }
 
@@ -263,7 +267,7 @@ async fn main() -> Result<()> {
 
             match orchestrator.health_check().await {
                 Ok(true) => {
-                    println!("✅ Ollama 服务正常");
+                    println!("✅ LLM 服务正常");
 
                     // 显示可用模型
                     let models = orchestrator.list_models().await?;
@@ -273,8 +277,8 @@ async fn main() -> Result<()> {
                     }
                 }
                 Ok(false) => {
-                    println!("❌ Ollama 服务不可用");
-                    println!("请确保 Ollama 正在运行：ollama serve");
+                    println!("❌ LLM 服务不可用");
+                    println!("请检查 config.toml 中的 provider/base_url/api_key 配置");
                 }
                 Err(e) => {
                     println!("❌ 健康检查失败：{}", e);
@@ -311,7 +315,7 @@ async fn main() -> Result<()> {
             let mut orchestrator = DramaOrchestrator::new(config, &cli.project)?;
             
             if !orchestrator.health_check().await? {
-                error!("Ollama 服务不可用");
+                error!("LLM 服务不可用");
                 return Ok(());
             }
 

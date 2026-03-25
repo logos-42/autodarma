@@ -238,49 +238,145 @@ pub struct FunctionCall {
 }
 
 // ============================================================================
-// Ollama Client
+// LLM Provider 枚举
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmProvider {
+    Ollama,
+    OpenAICompatible,
+}
+
+// ============================================================================
+// LLM Client - 支持多 Provider（Ollama / OpenAI 兼容 API）
 // ============================================================================
 
 #[derive(Clone)]
 pub struct OllamaClient {
     base_url: String,
     http_client: reqwest::Client,
+    provider: LlmProvider,
+    api_key: Option<String>,
 }
 
 impl OllamaClient {
+    /// 创建 Ollama 客户端
     pub fn new(base_url: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').into(),
             http_client: reqwest::Client::new(),
+            provider: LlmProvider::Ollama,
+            api_key: None,
         }
     }
 
-    /// 检查 Ollama 服务是否可用
+    /// 创建通用 LLM 客户端
+    pub fn new_with_provider(base_url: &str, provider: LlmProvider, api_key: Option<String>) -> Self {
+        let http_client = reqwest::Client::new();
+        Self {
+            base_url: base_url.trim_end_matches('/').into(),
+            http_client,
+            provider,
+            api_key,
+        }
+    }
+
+    /// 检查服务是否可用
     pub async fn health_check(&self) -> Result<bool> {
-        let url = format!("{}/api/tags", self.base_url);
-        match self.http_client.get(&url).timeout(std::time::Duration::from_secs(5)).send().await {
-            Ok(resp) => Ok(resp.status().is_success()),
-            Err(_) => Ok(false),
+        let url = match &self.provider {
+            LlmProvider::Ollama => format!("{}/api/version", self.base_url),
+            LlmProvider::OpenAICompatible => format!("{}/models", self.base_url),
+        };
+        let mut req = self.http_client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10));
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        match req.send().await {
+            Ok(resp) => {
+                let ok = !resp.status().is_server_error();
+                if !ok {
+                    eprintln!("[DEBUG] LLM 5xx 错误: {}", resp.status());
+                }
+                Ok(ok)
+            }
+            Err(e) => {
+                eprintln!("[DEBUG] LLM 连接失败: {}", e);
+                Ok(false)
+            }
         }
     }
 
     /// 获取可用模型列表
     pub async fn list_models(&self) -> Result<Vec<String>> {
-        let url = format!("{}/api/tags", self.base_url);
-        let resp: Value = self.http_client.get(&url).send().await?.json().await?;
-        let models = resp["models"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m["name"].as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(models)
+        let (url, parse_fn): (String, Box<dyn Fn(Value) -> Vec<String>>) = match &self.provider {
+            LlmProvider::Ollama => {
+                let url = format!("{}/api/tags", self.base_url);
+                let parse: Box<dyn Fn(Value) -> Vec<String>> = Box::new(|body: Value| {
+                    body["models"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| m["name"].as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                });
+                (url, parse)
+            }
+            LlmProvider::OpenAICompatible => {
+                let url = format!("{}/models", self.base_url);
+                let parse: Box<dyn Fn(Value) -> Vec<String>> = Box::new(|body: Value| {
+                    body["data"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| m["id"].as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                });
+                (url, parse)
+            }
+        };
+
+        let mut req = self.http_client.get(&url);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[DEBUG] list_models 请求失败: {}，返回空列表", e);
+                return Ok(vec![]);
+            }
+        };
+        if !resp.status().is_success() {
+            eprintln!("[DEBUG] list_models 状态码: {}，返回空列表", resp.status());
+            return Ok(vec![]);
+        }
+        let body: Value = resp.json().await.unwrap_or(Value::Null);
+        Ok(parse_fn(body))
     }
 
     /// 简单的文本补全（无工具调用）
     pub async fn complete(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_message: &str,
+        temperature: f32,
+        max_tokens: u32,
+    ) -> Result<String> {
+        match &self.provider {
+            LlmProvider::Ollama => self.complete_ollama(model, system_prompt, user_message, temperature, max_tokens).await,
+            LlmProvider::OpenAICompatible => self.complete_openai(model, system_prompt, user_message, temperature, max_tokens).await,
+        }
+    }
+
+    /// Ollama 格式的文本补全
+    async fn complete_ollama(
         &self,
         model: &str,
         system_prompt: &str,
@@ -303,17 +399,55 @@ impl OllamaClient {
             }
         });
 
-        let resp: Value = self
-            .http_client
+        let mut req = self.http_client
             .post(&url)
             .json(&body)
-            .timeout(std::time::Duration::from_secs(300))
-            .send()
-            .await?
-            .json()
-            .await?;
+            .timeout(std::time::Duration::from_secs(300));
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp: Value = req.send().await?.json().await?;
 
         let content = resp["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        Ok(content)
+    }
+
+    /// OpenAI 兼容格式的文本补全
+    async fn complete_openai(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_message: &str,
+        temperature: f32,
+        max_tokens: u32,
+    ) -> Result<String> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = json!({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            "stream": false,
+            "temperature": temperature,
+            "top_p": 0.9,
+            "max_tokens": max_tokens,
+        });
+
+        let mut req = self.http_client
+            .post(&url)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(300));
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp: Value = req.send().await?.json().await?;
+
+        let content = resp["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or("")
             .to_string();
@@ -384,31 +518,79 @@ impl OllamaClient {
         for round in 0..max_tool_rounds {
             debug!("Tool calling round {}", round + 1);
 
-            let body = json!({
-                "model": model,
-                "messages": &all_messages,
-                "stream": false,
-                "tools": if tool_definitions.is_empty() { Value::Null } else { json!(tool_definitions) },
-                "options": {
-                    "temperature": temperature,
-                    "top_p": 0.9,
-                    "num_predict": max_tokens,
+            let (assistant_msg, content): (Value, String) = match &self.provider {
+                LlmProvider::Ollama => {
+                    let body = json!({
+                        "model": model,
+                        "messages": &all_messages,
+                        "stream": false,
+                        "tools": if tool_definitions.is_empty() { Value::Null } else { json!(tool_definitions) },
+                        "options": {
+                            "temperature": temperature,
+                            "top_p": 0.9,
+                            "num_predict": max_tokens,
+                        }
+                    });
+                    let url = format!("{}/api/chat", self.base_url);
+                    let mut req = self.http_client
+                        .post(&url)
+                        .json(&body)
+                        .timeout(std::time::Duration::from_secs(300));
+                    if let Some(key) = &self.api_key {
+                        req = req.bearer_auth(key);
+                    }
+                    let resp: Value = req.send().await?.json().await?;
+                    let msg = resp["message"].clone();
+                    let c = msg["content"].as_str().unwrap_or("").to_string();
+                    (msg, c)
                 }
-            });
+                LlmProvider::OpenAICompatible => {
+                    let openai_messages: Vec<Value> = all_messages.iter().map(|m| {
+                        let mut msg = json!({
+                            "role": m.role,
+                            "content": m.content,
+                        });
+                        if let Some(ref tc) = m.tool_calls {
+                            msg["tool_calls"] = json!(tc.iter().map(|t| json!({
+                                "id": t.id,
+                                "type": t.call_type,
+                                "function": t.function,
+                            })).collect::<Vec<_>>());
+                        }
+                        if m.role == "tool" {
+                            msg["tool_call_id"] = json!(m.name.as_deref().unwrap_or(""));
+                        }
+                        msg
+                    }).collect();
 
-            let url = format!("{}/api/chat", self.base_url);
-            let resp: Value = self
-                .http_client
-                .post(&url)
-                .json(&body)
-                .timeout(std::time::Duration::from_secs(300))
-                .send()
-                .await?
-                .json()
-                .await?;
+                    let mut body = json!({
+                        "model": model,
+                        "messages": openai_messages,
+                        "stream": false,
+                        "temperature": temperature,
+                        "top_p": 0.9,
+                        "max_tokens": max_tokens,
+                    });
+                    if !tool_definitions.is_empty() {
+                        body["tools"] = json!(tool_definitions);
+                    }
 
-            let assistant_msg = &resp["message"];
-            let content = assistant_msg["content"].as_str().unwrap_or("").to_string();
+                    let url = format!("{}/chat/completions", self.base_url);
+                    let mut req = self.http_client
+                        .post(&url)
+                        .json(&body)
+                        .timeout(std::time::Duration::from_secs(300));
+                    if let Some(key) = &self.api_key {
+                        req = req.bearer_auth(key);
+                    }
+                    let resp: Value = req.send().await?.json().await?;
+                    let choice = &resp["choices"][0];
+                    let msg = choice["message"].clone();
+                    let c = msg["content"].as_str().unwrap_or("").to_string();
+                    (msg, c)
+                }
+            };
+
             let tool_calls = assistant_msg["tool_calls"].as_array();
 
             all_messages.push(Message {
@@ -439,7 +621,6 @@ impl OllamaClient {
             for tc in tool_calls.unwrap() {
                 let func_name = tc["function"]["name"].as_str().unwrap_or("");
                 let func_args = &tc["function"]["arguments"];
-                let _tc_id = tc["id"].as_str().unwrap_or("");
 
                 info!("执行工具: {} 参数: {}", func_name, func_args);
 
@@ -500,8 +681,12 @@ impl OllamaClient {
         temperature: f32,
         max_tokens: u32,
     ) -> Result<String> {
-        // 使用 complete 方法作为简化实现
         self.complete(model, system_prompt, user_message, temperature, max_tokens).await
+    }
+
+    /// 返回当前 provider
+    pub fn provider(&self) -> &LlmProvider {
+        &self.provider
     }
 }
 

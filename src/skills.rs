@@ -122,11 +122,21 @@ impl SkillRegistry {
         for entry in walkdir::WalkDir::new(dir)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "toml"))
+            .filter(|e| {
+                let ext = e.path().extension().map_or(false, |ext| ext == "toml");
+                let md = e.path().extension().map_or(false, |ext| ext == "md");
+                ext || md
+            })
         {
-            match self.load_skill_file(entry.path()) {
+            let path = entry.path();
+            let result = if path.extension().map_or(false, |ext| ext == "toml") {
+                self.load_skill_file(path)
+            } else {
+                self.load_skill_md_file(path)
+            };
+            match result {
                 Ok(_) => count += 1,
-                Err(e) => warn!("加载 skill 失败 {}: {}", entry.path().display(), e),
+                Err(e) => warn!("加载 skill 失败 {}: {}", path.display(), e),
             }
         }
 
@@ -134,7 +144,7 @@ impl SkillRegistry {
         Ok(count)
     }
 
-    /// 加载单个 skill 文件
+    /// 加载单个 skill 文件 (.toml)
     pub fn load_skill_file(&mut self, path: &Path) -> Result<()> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("读取 skill 文件失败: {}", path.display()))?;
@@ -143,6 +153,20 @@ impl SkillRegistry {
 
         let name = skill.skill.name.clone();
         info!("加载 skill: {} v{}", name, skill.skill.version);
+        self.skills.insert(name, skill);
+        Ok(())
+    }
+
+    /// 加载单个 skill 文件 (.md 格式)
+    pub fn load_skill_md_file(&mut self, path: &Path) -> Result<()> {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("读取 skill 文件失败: {}", path.display()))?;
+
+        let skill = parse_markdown_skill(&content)
+            .with_context(|| format!("解析 markdown skill 失败: {}", path.display()))?;
+
+        let name = skill.skill.name.clone();
+        info!("加载 skill: {} v{} (md)", name, skill.skill.version);
         self.skills.insert(name, skill);
         Ok(())
     }

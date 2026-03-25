@@ -27,13 +27,23 @@ pub struct QualityConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
+    /// LLM 提供者: "ollama" 或 "openai_compatible"
+    #[serde(default = "default_provider")]
+    pub provider: String,
     pub base_url: String,
+    /// API Key（OpenAI 兼容 API 必填）
+    #[serde(default)]
+    pub api_key: String,
     pub generation_model: String,
     pub review_model: String,
     pub meta_model: String,
     pub temperature: f32,
     pub top_p: f32,
     pub max_tokens: u32,
+}
+
+fn default_provider() -> String {
+    "ollama".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,7 +152,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             model: ModelConfig {
+                provider: "ollama".into(),
                 base_url: "http://localhost:11434".into(),
+                api_key: String::new(),
                 generation_model: "qwen2.5:14b".into(),
                 review_model: "qwen2.5:7b".into(),
                 meta_model: "qwen2.5:7b".into(),

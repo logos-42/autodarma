@@ -1,12 +1,15 @@
 [model]
-# Ollama 服务地址
-base_url = "http://localhost:11434"
+# LLM 提供者: "ollama" 或 "openai_compatible"
+provider = "ollama"
+# Ollama 云端 API
+base_url = "https://api.ollama.com"
+api_key = ""
 # 生成用模型（大模型，质量优先）
-generation_model = "qwen2.5:14b"
+generation_model = "glm-5"
 # 审查/修复用模型（快速模型）
-review_model = "qwen2.5:7b"
+review_model = "glm-4.6"
 # 元认知模型（创建 skill、规划等）
-meta_model = "qwen2.5:7b"
+meta_model = "glm-4.6"
 # 生成参数
 temperature = 0.8
 top_p = 0.9

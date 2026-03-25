@@ -1,12 +1,12 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::git::GitManager;
 use crate::goals::{GoalTracker, GoalType, GoalStatus};
-use crate::llm::{OllamaClient, AgentContext, Tool};
+use crate::llm::{OllamaClient, LlmProvider, AgentContext, Tool};
 use crate::memory::{MemoryStore, MemoryCategory, MemorySource};
 use crate::skills::SkillRegistry;
 use crate::output::OutputManager;
@@ -123,7 +123,29 @@ impl DramaOrchestrator {
         let mut skill_registry = SkillRegistry::new();
         skill_registry.load_from_dir(&skills_dir)?;
 
-        let ollama_client = OllamaClient::new(&config.model.base_url);
+        let ollama_client = match config.model.provider.as_str() {
+            "openai_compatible" | "glm" | "qwen" | "openai" => {
+                let api_key = if !config.model.api_key.is_empty() {
+                    config.model.api_key.clone()
+                } else {
+                    // 尝试从环境变量获取
+                    let key = std::env::var("LLM_API_KEY")
+                        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+                        .or_else(|_| std::env::var("GLM_API_KEY"))
+                        .unwrap_or_default();
+                    if key.is_empty() {
+                        warn!("未找到 API Key，请在 .env 中设置 LLM_API_KEY 或在 config.toml 中设置 api_key");
+                    }
+                    key
+                };
+                OllamaClient::new_with_provider(
+                    &config.model.base_url,
+                    LlmProvider::OpenAICompatible,
+                    if api_key.is_empty() { None } else { Some(api_key) },
+                )
+            }
+            _ => OllamaClient::new(&config.model.base_url),
+        };
         let git_manager = GitManager::new(
             project_dir.to_str().unwrap(),
             &config.git.commit_prefix,
