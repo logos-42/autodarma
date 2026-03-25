@@ -252,7 +252,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::RunSkill { skill, params } => {
+        Commands::RunSkill { skill, params: _ } => {
             info!("执行 skill: {}", skill);
             // TODO: 实现单个 skill 执行
             println!("单个 skill 执行功能开发中...");
@@ -337,7 +337,7 @@ async fn main() -> Result<()> {
             println!("修复功能开发中...");
         }
 
-        Commands::History { verbose } => {
+        Commands::History { verbose: _ } => {
             // TODO: 从持久化存储读取历史
             println!("执行历史功能开发中...");
         }
