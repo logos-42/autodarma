@@ -5,12 +5,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::llm::{AgentContext, Tool, ToolDefinition, ToolParam, ToolResult};
-use crate::memory::{MemoryCategory, MemoryEntry, MemorySource, MemoryStore};
+use crate::memory::{MemoryCategory, MemorySource, MemoryStore};
 use crate::goals::GoalTracker;
 
 // ============================================================================

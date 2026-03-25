@@ -130,6 +130,12 @@ impl Config {
         let _ = fs::create_dir_all(&dir);
         dir
     }
+
+    pub fn memory_store_dir(&self, project_dir: &Path) -> PathBuf {
+        let dir = project_dir.join(&self.memory.store_dir);
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
 }
 
 impl Default for Config {
@@ -169,6 +175,17 @@ impl Default for Config {
                 target_level: "SSS".into(),
                 infinite_repair: true,
                 max_repair_rounds: 0,
+            },
+            memory: MemoryConfig {
+                store_dir: "./.auto-drama".into(),
+                max_context_chars: 4000,
+                max_entries_per_category: 20,
+            },
+            agent: AgentConfig {
+                enable_tools: true,
+                max_tool_rounds: 15,
+                auto_inject_memory: true,
+                auto_inject_goals: true,
             },
         }
     }

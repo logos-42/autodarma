@@ -53,3 +53,21 @@ target_level = "SSS"
 infinite_repair = true
 # 最大修复轮次 (0 为无限，>0 为具体轮次)
 max_repair_rounds = 0
+
+[memory]
+# 记忆存储目录
+store_dir = "./.auto-drama"
+# 上下文注入的最大字符数
+max_context_chars = 4000
+# 每个分类最大返回条数
+max_entries_per_category = 20
+
+[agent]
+# 是否启用 rig 工具调用模式
+enable_tools = true
+# 最大工具调用轮次
+max_tool_rounds = 15
+# 是否自动注入记忆上下文
+auto_inject_memory = true
+# 是否自动注入目标上下文
+auto_inject_goals = true

@@ -2,10 +2,32 @@ use anyhow::{Context, Result};
 use std::process::Command;
 use tracing::{info, warn, debug};
 
+/// Git 提交类型
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitType {
+    Code,      // 代码更新
+    Script,    // 剧本内容
+    Config,    // 配置变更
+    Skill,     // Skill 更新
+}
+
+impl CommitType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CommitType::Code => "code",
+            CommitType::Script => "script",
+            CommitType::Config => "config",
+            CommitType::Skill => "skill",
+        }
+    }
+}
+
 pub struct GitManager {
     project_dir: String,
     commit_prefix: String,
     enabled: bool,
+    /// 剧本输出目录（用于区分剧本提交）
+    script_output_dir: String,
 }
 
 impl GitManager {
@@ -14,7 +36,14 @@ impl GitManager {
             project_dir: project_dir.into(),
             commit_prefix: commit_prefix.into(),
             enabled,
+            script_output_dir: "output".into(),
         }
+    }
+    
+    /// 设置剧本输出目录
+    pub fn with_script_dir(mut self, dir: &str) -> Self {
+        self.script_output_dir = dir.to_string();
+        self
     }
 
     /// 检查是否在 git 仓库中
@@ -49,6 +78,16 @@ impl GitManager {
 
     /// 自动添加并提交所有更改
     pub fn auto_commit(&self, message: &str) -> Result<bool> {
+        self.commit_with_scope(message, "all")
+    }
+
+    /// 按范围提交：script(仅剧本), code(仅代码), all(全部)
+    ///
+    /// 剧本存档和代码存档是分开的两个循环：
+    /// - `script`: 仅提交 output/ 目录下的剧本文件
+    /// - `code`: 仅提交 src/, Cargo.toml, config.toml, skills/ 等代码文件
+    /// - `all`: 提交全部
+    pub fn commit_with_scope(&self, message: &str, scope: &str) -> Result<bool> {
         if !self.enabled {
             return Ok(false);
         }
@@ -58,15 +97,21 @@ impl GitManager {
 
         let full_message = format!("{} {}", self.commit_prefix, message);
 
-        // git add -A
+        // 根据范围选择要 add 的路径
+        let add_args: Vec<&str> = match scope {
+            "script" => vec!["add", "output/"],
+            "code" => vec!["add", "src/", "Cargo.toml", "Cargo.lock", "config.toml", "skills/"],
+            _ => vec!["add", "-A"],
+        };
+
         let add_output = Command::new("git")
-            .args(["add", "-A"])
+            .args(&add_args)
             .current_dir(&self.project_dir)
             .output()
             .context("git add 失败")?;
 
         if !add_output.status.success() {
-            warn!("git add 失败: {}", String::from_utf8_lossy(&add_output.stderr));
+            warn!("git add 失败 [scope={}]: {}", scope, String::from_utf8_lossy(&add_output.stderr));
             return Ok(false);
         }
 
@@ -79,11 +124,11 @@ impl GitManager {
 
         let status = String::from_utf8_lossy(&status_output.stdout).trim().to_string();
         if status.is_empty() {
-            debug!("没有文件变更需要提交");
+            debug!("没有文件变更需要提交 [scope={}]", scope);
             return Ok(false);
         }
 
-        info!("自动提交: {}", full_message);
+        info!("自动提交 [scope={}] : {}", scope, full_message);
         let commit_output = Command::new("git")
             .args(["commit", "-m", &full_message])
             .current_dir(&self.project_dir)
@@ -91,11 +136,12 @@ impl GitManager {
             .context("git commit 失败")?;
 
         if commit_output.status.success() {
-            info!("提交成功");
+            info!("提交成功 [scope={}]", scope);
             Ok(true)
         } else {
             warn!(
-                "git commit 失败: {}",
+                "git commit 失败 [scope={}]: {}",
+                scope,
                 String::from_utf8_lossy(&commit_output.stderr)
             );
             Ok(false)

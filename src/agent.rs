@@ -1,11 +1,14 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{info, warn, error};
 
 use crate::config::Config;
 use crate::git::GitManager;
-use crate::llm::{OllamaClient, AgentContext};
+use crate::goals::{GoalTracker, GoalType, GoalStatus};
+use crate::llm::{OllamaClient, AgentContext, Tool};
+use crate::memory::{MemoryStore, MemoryCategory, MemorySource};
 use crate::skills::{SkillRegistry, SkillDefinition, SkillExecution, SkillMode, ReviewResult};
 use crate::output::OutputManager;
 
@@ -85,6 +88,12 @@ pub struct DramaOrchestrator {
     execution_log: Vec<ExecutionLogEntry>,
     /// 质量评估器
     quality_evaluator: Option<crate::quality::QualityEvaluator>,
+    /// 记忆存储
+    pub memory_store: Arc<std::sync::Mutex<MemoryStore>>,
+    /// 目标追踪器
+    pub goal_tracker: Arc<std::sync::Mutex<GoalTracker>>,
+    /// 可用工具列表
+    pub tools: Vec<Arc<dyn Tool>>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,7 +113,7 @@ impl DramaOrchestrator {
     pub fn new(config: Config, project_dir: &Path) -> Result<Self> {
         let output_dir = config.output_dir(project_dir);
         let skills_dir = config.skills_dir(project_dir);
-        let _dynamic_skills_dir = config.dynamic_skills_dir(project_dir);
+        let memory_dir = config.memory_store_dir(project_dir);
 
         let mut skill_registry = SkillRegistry::new();
         skill_registry.load_from_dir(&skills_dir)?;
@@ -131,6 +140,28 @@ impl DramaOrchestrator {
             config.model.review_model.clone(),
         );
 
+        // 初始化记忆系统
+        let memory_store = Arc::new(std::sync::Mutex::new(
+            MemoryStore::new(&memory_dir),
+        ));
+
+        // 初始化目标系统
+        let goal_tracker = Arc::new(std::sync::Mutex::new(
+            GoalTracker::new(&memory_dir),
+        ));
+
+        // 创建工具集
+        let tools = crate::tools::create_all_tools(
+            memory_store.clone(),
+            goal_tracker.clone(),
+            output_dir.to_str().unwrap(),
+            project_dir.to_str().unwrap(),
+            &config.git.commit_prefix,
+        );
+
+        info!("工具系统已初始化: {} 个工具", tools.len());
+        info!("记忆系统已初始化: {} 条记忆", memory_store.lock().unwrap().len());
+
         Ok(Self {
             config,
             project_dir: project_dir.to_path_buf(),
@@ -144,6 +175,9 @@ impl DramaOrchestrator {
             research_state: ResearchState::Initializing,
             execution_log: Vec::new(),
             quality_evaluator: Some(quality_evaluator),
+            memory_store,
+            goal_tracker,
+            tools,
         })
     }
 
@@ -189,17 +223,35 @@ impl DramaOrchestrator {
     /// 运行完整的创作 Pipeline (Karpas while 循环)
     pub async fn run_full_pipeline(&mut self, user_input: &HashMap<String, String>) -> Result<()> {
         info!("🎬 开始自动短剧创作流程 (Karpas while 循环模式)");
-        
+
         self.research_state = ResearchState::Initializing;
-        
+
         // 初始化 git
         if self.config.pipeline.auto_commit {
             self.git_manager.ensure_repo()?;
         }
 
-        // 将用户输入存入上下文
+        // 将用户输入存入上下文和记忆
         for (key, value) in user_input {
             self.agent_context.set_metadata(key.clone(), serde_json::json!(value));
+        }
+
+        // 初始化目标系统
+        self.init_goals(user_input);
+
+        // 将用户输入保存为记忆
+        {
+            let mut memory = self.memory_store.lock().unwrap();
+            for (key, value) in user_input {
+                memory.add(
+                    MemoryCategory::Preference,
+                    &format!("用户需求: {}", key),
+                    value,
+                    vec!["user_input", "preference"],
+                    0.9,
+                    MemorySource::UserInput,
+                );
+            }
         }
 
         let mut iteration = 0u32;
@@ -212,18 +264,37 @@ impl DramaOrchestrator {
             info!("║  第 {} 轮迭代 (max: {})          ║", iteration, Self::MAX_ITERATIONS);
             info!("╚══════════════════════════════════════╝");
 
+            // 注入记忆上下文
+            if self.config.agent.auto_inject_memory {
+                self.inject_memory_context();
+            }
+
             // 遍历所有阶段
             for stage in DramaStage::all_stages() {
                 self.current_stage = stage.clone();
                 info!("📌 进入阶段：{}", stage.as_str());
-                
+
+                // 更新目标状态
+                {
+                    let stage_goals: Vec<String> = self.goal_tracker.lock().unwrap()
+                        .get_pending()
+                        .iter()
+                        .map(|g| g.id.clone())
+                        .collect();
+                    let mut tracker = self.goal_tracker.lock().unwrap();
+                    for gid in stage_goals {
+                        tracker.update_status(&gid, GoalStatus::InProgress);
+                    }
+                }
+
                 match self.run_stage(&stage, user_input).await {
                     Ok(_) => {
                         info!("✓ 阶段 {} 完成", stage.as_str());
-                        
+
+                        // 剧本存档循环：仅提交 output 目录
                         if self.config.pipeline.auto_commit {
-                            let commit_msg = format!("完成 {} 阶段 (迭代 {})", stage.as_str(), iteration);
-                            let _ = self.git_manager.auto_commit(&commit_msg);
+                            let commit_msg = format!("[剧本] 完成 {} 阶段 (迭代 {})", stage.as_str(), iteration);
+                            let _ = self.git_manager.commit_with_scope(&commit_msg, "script");
                         }
                     }
                     Err(e) => {
@@ -243,6 +314,33 @@ impl DramaOrchestrator {
                 best_quality = Some(quality_score);
             }
 
+            // 更新质量目标
+            {
+                let mut tracker = self.goal_tracker.lock().unwrap();
+                let quality_goals: Vec<String> = tracker
+                    .get_by_type(&GoalType::QualityTarget)
+                    .iter()
+                    .map(|g| g.id.clone())
+                    .collect();
+                for gid in quality_goals {
+                    tracker.evaluate_goal(&gid, quality_score, 10.0, quality_score >= Self::SSS_QUALITY_THRESHOLD,
+                        &format!("质量分数: {:.1}/10", quality_score));
+                }
+            }
+
+            // 保存质量评估为记忆
+            {
+                let mut memory = self.memory_store.lock().unwrap();
+                memory.add(
+                    MemoryCategory::QualityReport,
+                    &format!("第 {} 轮质量评估", iteration),
+                    &format!("分数: {:.1}/10", quality_score),
+                    vec!["quality", &format!("iteration_{}", iteration)],
+                    0.7,
+                    MemorySource::Auto,
+                );
+            }
+
             // 检查是否达到 SSS
             if quality_score >= Self::SSS_QUALITY_THRESHOLD {
                 info!("🌟 达到 SSS 质量等级！分数：{:.1}", quality_score);
@@ -259,14 +357,14 @@ impl DramaOrchestrator {
         }
 
         self.research_state = ResearchState::Complete;
-        
-        // 最终提交
+
+        // 最终提交 - 剧本存档
         if self.config.pipeline.auto_commit {
             let quality_msg = best_quality
-                .map(|s| format!("🎉 短剧创作完成 - 质量分数：{:.1}/10 ({} 轮迭代)", s, iteration))
-                .unwrap_or_else(|| "🎉 短剧创作完成".to_string());
-            let _ = self.git_manager.auto_commit(&quality_msg);
-            
+                .map(|s| format!("[剧本] 🎉 短剧创作完成 - 质量分数：{:.1}/10 ({} 轮迭代)", s, iteration))
+                .unwrap_or_else(|| "[剧本] 🎉 短剧创作完成".to_string());
+            let _ = self.git_manager.commit_with_scope(&quality_msg, "script");
+
             if self.config.git.push_after_complete {
                 let _ = self.git_manager.push();
             }
@@ -1018,4 +1116,79 @@ skill 应该包含：
         Ok(())
     }
 
+    /// 注入记忆上下文到 agent context
+    fn inject_memory_context(&mut self) {
+        let memory = self.memory_store.lock().unwrap();
+        let context = memory.get_context_for_prompt(self.config.memory.max_context_chars);
+        self.agent_context.set_metadata(
+            "memory_context".into(),
+            serde_json::json!(context),
+        );
+        info!("已注入记忆上下文 ({} 字符)", context.len());
+    }
+
+    /// 初始化创作目标
+    fn init_goals(&mut self, user_input: &HashMap<String, String>) {
+        let mut tracker = self.goal_tracker.lock().unwrap();
+
+        // 清除旧目标
+        tracker.reset();
+
+        // 主目标：完成短剧创作
+        let title = user_input.get("title").map(|s| s.as_str()).unwrap_or("未命名短剧");
+        tracker.create_goal(
+            "完成短剧创作",
+            &format!("完成短剧「{}」的全部创作流程", title),
+            GoalType::ScriptCreation,
+            10,
+            "所有阶段(Planning/Writing/Review/Polishing)完成且质量达标",
+            1,
+        );
+
+        // 质量目标
+        let target_level = &self.config.quality.target_level;
+        tracker.create_goal(
+            "质量达标",
+            &format!("达到 {} 质量等级", target_level),
+            GoalType::QualityTarget,
+            9,
+            &format!("质量评估分数达到 {} 等级", target_level),
+            10,
+        );
+
+        // 各阶段子目标
+        for stage in DramaStage::all_stages() {
+            tracker.create_goal(
+                &format!("完成 {} 阶段", stage.as_str()),
+                &format!("完成 {} 阶段所有 skill 执行", stage.as_str()),
+                GoalType::StageComplete,
+                7,
+                &format!("{} 阶段所有 skill 执行成功", stage.as_str()),
+                5,
+            );
+        }
+
+        info!("已初始化 {} 个目标", tracker.get_pending().len() + tracker.get_in_progress().len());
+    }
+
+    /// 将 skill 执行结果保存为记忆
+    fn save_skill_result_to_memory(&mut self, skill_name: &str, content: &str, stage: &DramaStage) {
+        let category = match stage {
+            DramaStage::Planning => MemoryCategory::Decision,
+            DramaStage::Writing => MemoryCategory::Plot,
+            DramaStage::Review => MemoryCategory::Issue,
+            DramaStage::Polishing => MemoryCategory::General,
+        };
+
+        let truncated = &content[..content.len().min(500)];
+        let mut memory = self.memory_store.lock().unwrap();
+        memory.add(
+            category,
+            &format!("Skill 结果: {}", skill_name),
+            truncated,
+            vec!["skill_output", skill_name, stage.as_str()],
+            0.6,
+            MemorySource::SkillOutput,
+        );
+    }
 }
