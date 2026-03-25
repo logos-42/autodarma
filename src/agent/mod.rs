@@ -128,7 +128,6 @@ impl DramaOrchestrator {
                 let api_key = if !config.model.api_key.is_empty() {
                     config.model.api_key.clone()
                 } else {
-                    // 尝试从环境变量获取
                     let key = std::env::var("LLM_API_KEY")
                         .or_else(|_| std::env::var("OPENAI_API_KEY"))
                         .or_else(|_| std::env::var("GLM_API_KEY"))
@@ -144,7 +143,19 @@ impl DramaOrchestrator {
                     if api_key.is_empty() { None } else { Some(api_key) },
                 )
             }
-            _ => OllamaClient::new(&config.model.base_url),
+            _ => {
+                // Ollama provider 也支持 API Key（云端 Ollama 需要）
+                let api_key = if !config.model.api_key.is_empty() {
+                    config.model.api_key.clone()
+                } else {
+                    std::env::var("LLM_API_KEY").unwrap_or_default()
+                };
+                OllamaClient::new_with_provider(
+                    &config.model.base_url,
+                    LlmProvider::Ollama,
+                    if api_key.is_empty() { None } else { Some(api_key) },
+                )
+            }
         };
         let git_manager = GitManager::new(
             project_dir.to_str().unwrap(),

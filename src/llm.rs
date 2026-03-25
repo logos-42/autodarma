@@ -406,9 +406,23 @@ impl OllamaClient {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp: Value = req.send().await?.json().await?;
+        let resp = req.send().await?;
+        let status = resp.status();
+        let raw_body = resp.text().await
+            .map_err(|e| anyhow::anyhow!("读取响应体失败: {}", e))?;
 
-        let content = resp["message"]["content"]
+        if !status.is_success() {
+            anyhow::bail!("Ollama API 错误 {}，响应: {}",
+                status,
+                raw_body.chars().take(500).collect::<String>());
+        }
+
+        let parsed: Value = serde_json::from_str(&raw_body)
+            .map_err(|e| anyhow::anyhow!("JSON 解析失败: {}，原始响应前500字符: {}",
+                e,
+                raw_body.chars().take(500).collect::<String>()))?;
+
+        let content = parsed["message"]["content"]
             .as_str()
             .unwrap_or("")
             .to_string();
@@ -445,9 +459,23 @@ impl OllamaClient {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp: Value = req.send().await?.json().await?;
+        let resp = req.send().await?;
+        let status = resp.status();
+        let raw_body = resp.text().await
+            .map_err(|e| anyhow::anyhow!("读取响应体失败: {}", e))?;
 
-        let content = resp["choices"][0]["message"]["content"]
+        if !status.is_success() {
+            anyhow::bail!("OpenAI API 错误 {}，响应: {}",
+                status,
+                raw_body.chars().take(500).collect::<String>());
+        }
+
+        let parsed: Value = serde_json::from_str(&raw_body)
+            .map_err(|e| anyhow::anyhow!("JSON 解析失败: {}，原始响应前500字符: {}",
+                e,
+                raw_body.chars().take(500).collect::<String>()))?;
+
+        let content = parsed["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or("")
             .to_string();
@@ -539,8 +567,16 @@ impl OllamaClient {
                     if let Some(key) = &self.api_key {
                         req = req.bearer_auth(key);
                     }
-                    let resp: Value = req.send().await?.json().await?;
-                    let msg = resp["message"].clone();
+                    let resp = req.send().await?;
+                    let status = resp.status();
+                    let raw = resp.text().await
+                        .map_err(|e| anyhow::anyhow!("读取响应体失败: {}", e))?;
+                    if !status.is_success() {
+                        anyhow::bail!("Ollama API 错误 {}，响应: {}", status, raw.chars().take(500).collect::<String>());
+                    }
+                    let parsed: Value = serde_json::from_str(&raw)
+                        .map_err(|e| anyhow::anyhow!("JSON 解析失败: {}，原始响应前500字符: {}", e, raw.chars().take(500).collect::<String>()))?;
+                    let msg = parsed["message"].clone();
                     let c = msg["content"].as_str().unwrap_or("").to_string();
                     (msg, c)
                 }
@@ -583,8 +619,16 @@ impl OllamaClient {
                     if let Some(key) = &self.api_key {
                         req = req.bearer_auth(key);
                     }
-                    let resp: Value = req.send().await?.json().await?;
-                    let choice = &resp["choices"][0];
+                    let resp = req.send().await?;
+                    let status = resp.status();
+                    let raw = resp.text().await
+                        .map_err(|e| anyhow::anyhow!("读取响应体失败: {}", e))?;
+                    if !status.is_success() {
+                        anyhow::bail!("OpenAI API 错误 {}，响应: {}", status, raw.chars().take(500).collect::<String>());
+                    }
+                    let parsed: Value = serde_json::from_str(&raw)
+                        .map_err(|e| anyhow::anyhow!("JSON 解析失败: {}，原始响应前500字符: {}", e, raw.chars().take(500).collect::<String>()))?;
+                    let choice = &parsed["choices"][0];
                     let msg = choice["message"].clone();
                     let c = msg["content"].as_str().unwrap_or("").to_string();
                     (msg, c)
